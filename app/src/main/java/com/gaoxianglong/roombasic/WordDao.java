@@ -2,6 +2,7 @@ package com.gaoxianglong.roombasic;
 
 import android.view.View;
 
+import androidx.lifecycle.LiveData;
 import androidx.room.Dao;
 import androidx.room.Delete;
 import androidx.room.Insert;
@@ -22,7 +23,8 @@ public interface WordDao {
     void deleteWords(Word... words); // 返回值也可以是int返回删除多少行
 
     @Query("SELECT * FROM WORD ORDER BY _ID DESC") // 使用@Query注解可以执行后面跟的SQL语句,使用降序排序
-    List<Word> queryAllWord(); // 查询所有的数据
+//    List<Word> queryAllWord(); // 查询所有的数据
+    LiveData<List<Word>> queryAllWordLive(); // 本身Room就是支持LiveData的
 
     @Query("DELETE FROM WORD")
     void deleteAllWord(); // 删除整个表
