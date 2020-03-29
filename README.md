@@ -172,7 +172,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     }
 }
 ```
-
+### 优化
 上面的已经实现了整个功能，但是有很多地方不足，比如我们强制了在主线程中更新UI数据、还有多处调用了updateView()方法这样会很累赘、多处进退应用会重复创建Database的实例，这样很消耗资源、也没有做到对应的类只完成自己该做的事.
 现在来优化一下，先解决多处调用updateView()吧，我们利用LiveData就可以做到监听数据发生变化时。
 修改Dao中的查询语句代码，将返回值改成liveData
