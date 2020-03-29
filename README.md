@@ -173,6 +173,233 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 }
 ```
 
+上面的已经实现了整个功能，但是有很多地方不足，比如我们强制了在主线程中更新UI数据、还有多处调用了updateView()方法这样会很累赘、多处进退应用会重复创建Database的实例，这样很消耗资源、也没有做到对应的类只完成自己该做的事.
+现在来优化一下，先解决多处调用updateView()吧，我们利用LiveData就可以做到监听数据发生变化时。
+修改Dao中的查询语句代码，将返回值改成liveData
+```java
+@Query("SELECT * FROM WORD ORDER BY _ID DESC")
+LiveData<List<Word>> queryAllWordLive(); // 本身Room就是支持LiveData的
+```
+然后在MainActivity里添加如下代码，(要合理观看代码，搞清楚每一个变量表示的是什么)
+```java
+LiveData<List<Word>> queryAllWordLive; // 成员变量,保存数据库中的数据
+queryAllWordLive = mWordDao.queryAllWordLive(); // 获取数据库中的数据，mWordDao是已经定义过的，你要是照着上面一步一步的做肯定就有，它是Dao的实例
+queryAllWordLive.observe(this,words -> {
+// 这里是当LiveData的数据发生改变的时候就会回调的函数onChanged(List<Word> words)
+// 在这里进行更新UI的操作就不用在多处调用updateView()进行更新UI了
+StringBuilder text = new StringBuilder();
+for (int i = 0; i < words.size(); i++) {
+    Word word = words.get(i);
+    text.append(String.format("%s:%s=%s\n", word.getId(), word.getWord(), word.getChineseMeaning()));
+}
+mTextView.setText(text.toString());
+});
+```
+解决重复创建Database实例
+```java
+@Database(entities = {Word.class},version = 1,exportSchema = false)
+public abstract class WordDatabase extends RoomDatabase {
+    // singleton 单例模式,让无论是什么情况下,创建的实例都是同一个,这样就能解决创建多个实例消耗资源的情况
+    private static WordDatabase INSTANCE;
+    // synchronized让不同的线程中访问需要排队,消除碰撞
+    static synchronized WordDatabase getDatabase(Context context) {
+        if (INSTANCE == null) {
+            INSTANCE = Room.databaseBuilder(context.getApplicationContext(),WordDatabase.class,"Word_database")
+                    .build();
+        }
+        return INSTANCE;
+    }
+    ...
+}
+```
+这样就可以代替updateView()方法了，还不用到处调用，LiveData监听到数据发生变化就会更新UI数据。
+现在来一起出来剩下的不足，首先需要创建一个仓库，用于获取数据，Activity是用于操作控件的，ViewModel是用于操作数据的，获取数据的重要任务就交个仓库了。
+在仓库里面就可以解决主线程的问题，使用AsyncTask.
+```java
+/**
+ * 这个是仓库类，用于获取数据
+ */
+public class WordRepository {
+    private WordDao mWordDao;
+    private LiveData<List<Word>> queryAllWordLive;
+    public WordRepository(Context context) {
+        WordDatabase wordDatabase = WordDatabase.getDatabase(context.getApplicationContext());
+        mWordDao = wordDatabase.getWordDao();
+        queryAllWordLive = mWordDao.queryAllWordLive();
+    }
+
+    public LiveData<List<Word>> getQueryAllWordLive() {
+        return queryAllWordLive;
+    }
+
+    public void insertWord(Word... words) {
+        new InsertAsyncTask(mWordDao).execute(words);
+    }
+    public void updateWord(Word... words) {
+        new UpdateAsyncTask(mWordDao).execute(words);
+    }
+    public void deleteWord(Word... words) {
+        new DeleteAsyncTask(mWordDao).execute(words);
+    }
+    public void deleteAllWord() {
+        new DeleteAllAsyncTask(mWordDao).execute();
+    }
+
+    /**
+     * 使用AsyncTask完成更新UI
+     * 前面的操作都是强制在主线程(UI线程)中更新的数据
+     * 在Android中这个操作是很危险的
+     * 插入
+     */
+    static class InsertAsyncTask extends AsyncTask<Word, Void, Void> {
+        private WordDao mWordDao;
+
+        public InsertAsyncTask(WordDao wordDao) {
+            mWordDao = wordDao;
+        }
+
+        @Override
+        protected Void doInBackground(Word... words) {
+            // 这个回调方法中写更新数据的逻辑
+            mWordDao.insertWords(words);
+            return null;
+        }
+    }
+
+    /**
+     * 更新
+     */
+    static class UpdateAsyncTask extends AsyncTask<Word, Void, Void> {
+        private WordDao mWordDao;
+
+        public UpdateAsyncTask(WordDao wordDao) {
+            mWordDao = wordDao;
+        }
+
+        @Override
+        protected Void doInBackground(Word... words) {
+            mWordDao.updateWords(words);
+            return null;
+        }
+    }
+
+    /**
+     * 删除
+     */
+    static class DeleteAsyncTask extends AsyncTask<Word, Void, Void> {
+        private WordDao mWordDao;
+
+        public DeleteAsyncTask(WordDao wordDao) {
+            mWordDao = wordDao;
+        }
+
+        @Override
+        protected Void doInBackground(Word... words) {
+            mWordDao.deleteWords(words);
+            return null;
+        }
+    }
+
+    /**
+     * 清空
+     * 因为这个操作不需要数据库实体对象，所以三个参数都可以是Void
+     */
+    static class DeleteAllAsyncTask extends AsyncTask<Void, Void, Void> {
+        private WordDao mWordDao;
+
+        public DeleteAllAsyncTask(WordDao wordDao) {
+            mWordDao = wordDao;
+        }
+
+        @Override
+        protected Void doInBackground(Void... voids) {
+            mWordDao.deleteAllWord();
+            return null;
+        }
+    }
+}
+```
+有了数据就是操作数据了，创建一个ViewModel
+```java
+public class WordViewModel extends AndroidViewModel {
+    private WordDao mWordDao;
+    private WordRepository mWordRepository;
+
+    public WordViewModel(@NonNull Application application) {
+        super(application);
+        mWordRepository = new WordRepository(application);
+    }
+
+    public LiveData<List<Word>> getQueryAllWordLive() {
+        return mWordRepository.getQueryAllWordLive();
+    }
+
+    public void insertWord(Word... words) {
+        mWordRepository.insertWord(words);
+    }
+    public void updateWord(Word... words) {
+        mWordRepository.updateWord(words);
+    }
+    public void deleteWord(Word... words) {
+        mWordRepository.deleteWord(words);
+    }
+    public void deleteAllWord() {
+        mWordRepository.deleteAllWord();
+    }
+}
+```
+最后是Activity的使用控件触发ViewModel中的数据操作逻辑了
+```java
+public class MainActivity extends AppCompatActivity implements View.OnClickListener {
+    ...
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        ...
+        mViewModel = ViewModelProviders.of(this).get(WordViewModel.class);
+        mTextView = findViewById(R.id.textView);
+        mViewModel.getQueryAllWordLive().observe(this,words -> {
+            // 这里是当LiveData的数据发生改变的时候就会回调的函数onChanged(List<Word> words)
+            // 在这里进行更新UI的操作就不用在多处调用updateView()进行更新UI了
+            StringBuilder text = new StringBuilder();
+            for (int i = 0; i < words.size(); i++) {
+                Word word = words.get(i);
+                text.append(String.format("%s:%s=%s\n", word.getId(), word.getWord(), word.getChineseMeaning()));
+            }
+            mTextView.setText(text.toString());
+        });
+        findViewById(R.id.button).setOnClickListener(this);
+        findViewById(R.id.button2).setOnClickListener(this);
+        findViewById(R.id.button3).setOnClickListener(this);
+        findViewById(R.id.button4).setOnClickListener(this);
+    }
+
+    @Override
+    public void onClick(View v) {
+        switch (v.getId()) {
+            case R.id.button:
+                Word word1 = new Word("Hello!","你好！");
+                Word word2 = new Word("Word.","世界。");
+                mViewModel.insertWord(word1,word2);
+                break;
+            case R.id.button2:
+                Word word3 = new Word("Hi!","你好！");
+                word3.setId(1);
+                mViewModel.updateWord(word3);
+                break;
+            case R.id.button3:
+                mViewModel.deleteAllWord();
+                break;
+            case R.id.button4:
+                Word word4 = new Word();
+                word4.setId(2);
+                mViewModel.deleteWord(word4);
+                break;
+        }
+    }
+
+}
+```
+
 ---
 
 感谢B站大佬longway777的[视频教程](https://www.bilibili.com/video/BV1ct411K7tp/?spm_id_from=333.788.videocard.0)
